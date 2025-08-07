@@ -1,0 +1,19 @@
+{
+  "name": "shareflow",
+  "version": "1.0.0",
+  "description": "High-quality screen sharing platform",
+  "private": true,
+  "scripts": {
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:server": "cd server && npm run dev",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:frontend\"",
+    "build:frontend": "cd frontend && npm run build",
+    "install:all": "npm install && cd frontend && npm install && cd ../server && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^7.6.0"
+  },
+  "keywords": ["webrtc", "screen-sharing", "real-time", "collaboration"],
+  "author": "",
+  "license": "MIT"
+}
