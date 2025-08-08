@@ -220,6 +220,30 @@ export class WebRTCConnection {
     }, 5000) // Check every 5 seconds
   }
 
+  // Add an existing media stream to the peer connection
+  async addStream(stream: MediaStream, quality: StreamQuality['resolution'] = '1080p') {
+    this.localStream = stream
+    this.quality = quality
+
+    // Add tracks with proper encoding parameters
+    for (const track of stream.getTracks()) {
+      const sender = this.pc.addTrack(track, stream)
+      
+      if (track.kind === 'video') {
+        // Set content hint for better encoding
+        if ('contentHint' in track) {
+          (track as any).contentHint = quality === '1080p' ? 'detail' : 'motion'
+        }
+        
+        // Configure encoding parameters
+        await this.configureVideoEncoding(sender, quality)
+      }
+    }
+
+    // Create data channel for chat
+    this.createDataChannel()
+  }
+
   async startScreenShare(quality: StreamQuality['resolution'] = '1080p') {
     try {
       const constraints = QUALITY_PRESETS[quality]
