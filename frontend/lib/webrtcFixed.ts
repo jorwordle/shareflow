@@ -119,43 +119,47 @@ export class FixedWebRTCConnection {
       }
     }
     
-    // Add new tracks with proper transceiver configuration
+    // Simply add tracks using addTrack - let WebRTC handle transceiver creation
     for (const track of stream.getTracks()) {
       console.log(`[WebRTC ${this.peerId}] Adding ${track.kind} track: ${track.id}`)
       
-      // Use addTransceiver for better control over SDP
-      if (track.kind === 'video') {
-        const transceiver = this.pc.addTransceiver(track, {
-          direction: 'sendonly',
-          streams: [stream],
-          sendEncodings: [
-            {
-              maxBitrate: 8000000, // 8 Mbps for video
-            }
-          ]
-        })
-      } else if (track.kind === 'audio') {
-        const transceiver = this.pc.addTransceiver(track, {
-          direction: 'sendonly',
-          streams: [stream],
-          sendEncodings: [
-            {
-              maxBitrate: 128000, // 128 kbps for audio
-            }
-          ]
-        })
+      try {
+        const sender = this.pc.addTrack(track, stream)
+        
+        // Configure encoding parameters after adding
+        const params = sender.getParameters()
+        if (!params.encodings) {
+          params.encodings = [{}]
+        }
+        
+        if (track.kind === 'video') {
+          params.encodings[0].maxBitrate = 8000000 // 8 Mbps for video
+        } else if (track.kind === 'audio') {
+          params.encodings[0].maxBitrate = 128000 // 128 kbps for audio
+        }
+        
+        // Only set parameters if the method exists
+        if (sender.setParameters) {
+          await sender.setParameters(params)
+        }
+      } catch (error) {
+        console.error(`[WebRTC ${this.peerId}] Error adding ${track.kind} track:`, error)
       }
     }
   }
   
   createDataChannel(): RTCDataChannel {
-    // Create data channel before any media to ensure consistent SDP ordering
     console.log(`[WebRTC ${this.peerId}] Creating data channel`)
     
     try {
+      // Check if data channel already exists
+      if (this.dataChannel) {
+        console.log(`[WebRTC ${this.peerId}] Data channel already exists`)
+        return this.dataChannel
+      }
+      
       this.dataChannel = this.pc.createDataChannel('chat', {
-        ordered: true,
-        // Don't set maxPacketLifeTime or maxRetransmits to avoid conflicts
+        ordered: true
       })
       
       this.setupDataChannelHandlers(this.dataChannel)
@@ -173,19 +177,16 @@ export class FixedWebRTCConnection {
       this.makingOffer = true
       this.isNegotiating = true
       
-      const offer = await this.pc.createOffer({
-        offerToReceiveAudio: false, // We're sending, not receiving
-        offerToReceiveVideo: false, // We're sending, not receiving
-      })
+      // Create offer without forcing receive constraints
+      const offer = await this.pc.createOffer()
       
-      // Fix SDP to ensure consistent m-line ordering
-      if (offer.sdp) {
-        offer.sdp = this.fixSdpMlineOrder(offer.sdp)
-      }
-      
+      // Don't modify SDP for now - let WebRTC handle it naturally
       await this.pc.setLocalDescription(offer)
       
       return offer
+    } catch (error) {
+      console.error(`[WebRTC ${this.peerId}] Error creating offer:`, error)
+      throw error
     } finally {
       this.makingOffer = false
     }
@@ -198,11 +199,6 @@ export class FixedWebRTCConnection {
       this.isNegotiating = true
       
       if (offer.type === 'offer') {
-        // Fix SDP before setting
-        if (offer.sdp) {
-          offer.sdp = this.fixSdpMlineOrder(offer.sdp)
-        }
-        
         await this.pc.setRemoteDescription(offer)
         
         // Process any pending ICE candidates
@@ -210,21 +206,10 @@ export class FixedWebRTCConnection {
         
         // Create answer
         const answer = await this.pc.createAnswer()
-        
-        // Fix answer SDP
-        if (answer.sdp) {
-          answer.sdp = this.fixSdpMlineOrder(answer.sdp)
-        }
-        
         await this.pc.setLocalDescription(answer)
         
         return answer
       } else if (offer.type === 'answer') {
-        // Fix SDP before setting
-        if (offer.sdp) {
-          offer.sdp = this.fixSdpMlineOrder(offer.sdp)
-        }
-        
         await this.pc.setRemoteDescription(offer)
         
         // Process any pending ICE candidates
@@ -274,58 +259,6 @@ export class FixedWebRTCConnection {
       
       this.pendingCandidates = []
     }
-  }
-  
-  private fixSdpMlineOrder(sdp: string): string {
-    // Parse SDP into lines
-    const lines = sdp.split('\r\n')
-    const mediaBlocks: { [key: string]: string[] } = {}
-    let currentMedia = 'session'
-    let currentBlock: string[] = []
-    
-    for (const line of lines) {
-      if (line.startsWith('m=')) {
-        // Save previous block
-        if (currentBlock.length > 0) {
-          if (!mediaBlocks[currentMedia]) {
-            mediaBlocks[currentMedia] = []
-          }
-          mediaBlocks[currentMedia] = currentBlock
-        }
-        
-        // Start new media block
-        currentMedia = line.split(' ')[0].substring(2) // Get media type (audio, video, application)
-        currentBlock = [line]
-      } else if (line !== '') {
-        currentBlock.push(line)
-      }
-    }
-    
-    // Save last block
-    if (currentBlock.length > 0) {
-      mediaBlocks[currentMedia] = currentBlock
-    }
-    
-    // Reconstruct SDP with consistent ordering: application (data), audio, video
-    const orderedSdp: string[] = []
-    
-    // Add session block
-    if (mediaBlocks['session']) {
-      orderedSdp.push(...mediaBlocks['session'])
-    }
-    
-    // Add media blocks in consistent order
-    const mediaOrder = ['application', 'audio', 'video']
-    for (const mediaType of mediaOrder) {
-      if (mediaBlocks[mediaType]) {
-        orderedSdp.push(...mediaBlocks[mediaType])
-      }
-    }
-    
-    // Add empty line at the end
-    orderedSdp.push('')
-    
-    return orderedSdp.join('\r\n')
   }
   
   sendMessage(message: string): boolean {

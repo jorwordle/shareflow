@@ -89,11 +89,14 @@ export default function RoomPage() {
     // If initiator (host) and has stream, set up the connection
     if (isInitiator && localStreamRef.current) {
       try {
-        // IMPORTANT: Create data channel first to ensure consistent SDP ordering
+        // Add the stream first
+        await connection.addStream(localStreamRef.current)
+        
+        // Then create data channel
         connection.createDataChannel()
         
-        // Then add the stream
-        await connection.addStream(localStreamRef.current)
+        // Small delay to let things settle
+        await new Promise(resolve => setTimeout(resolve, 100))
         
         // Create and send offer
         const offer = await connection.createOffer()
