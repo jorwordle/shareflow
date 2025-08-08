@@ -4,7 +4,7 @@
   publish = "frontend/.next"
 
 [build.environment]
-  NEXT_PUBLIC_SERVER_URL = "https://shareflow-server.up.railway.app"
+  NEXT_PUBLIC_SERVER_URL = "https://screenshare-signaling-production.up.railway.app"
   NODE_VERSION = "18"
 
 [[plugins]]

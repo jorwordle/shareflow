@@ -317,10 +317,11 @@ export class WebRTCConnection {
   }
 
   private createDataChannel() {
+    // Note: Can't use both maxRetransmits and maxPacketLifeTime
+    // Using maxRetransmits for reliability
     this.dataChannel = this.pc.createDataChannel('chat', {
       ordered: true,
       maxRetransmits: 3,
-      maxPacketLifeTime: 3000, // 3 seconds
     })
     
     this.setupDataChannelHandlers(this.dataChannel)
