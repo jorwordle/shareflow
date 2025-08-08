@@ -33,7 +33,9 @@ export class FixedWebRTCConnection {
           credential: 'openrelayproject',
         }
       ],
-      iceCandidatePoolSize: 10
+      iceCandidatePoolSize: 10,
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require',
     })
     
     this.setupEventHandlers()
@@ -133,7 +135,20 @@ export class FixedWebRTCConnection {
         }
         
         if (track.kind === 'video') {
-          params.encodings[0].maxBitrate = 8000000 // 8 Mbps for video
+          // Adaptive bitrate based on resolution
+          const settings = track.getSettings()
+          const pixels = (settings.width || 1920) * (settings.height || 1080)
+          
+          if (pixels > 2073600) { // 1080p
+            params.encodings[0].maxBitrate = 6000000 // 6 Mbps for 1080p
+          } else if (pixels > 921600) { // 720p
+            params.encodings[0].maxBitrate = 3000000 // 3 Mbps for 720p
+          } else {
+            params.encodings[0].maxBitrate = 1500000 // 1.5 Mbps for lower res
+          }
+          
+          // Enable resolution scaling for better quality adaptation
+          params.encodings[0].scaleResolutionDownBy = 1
         } else if (track.kind === 'audio') {
           params.encodings[0].maxBitrate = 128000 // 128 kbps for audio
         }
@@ -277,12 +292,43 @@ export class FixedWebRTCConnection {
   close() {
     console.log(`[WebRTC ${this.peerId}] Closing connection`)
     
+    // Clean up data channel
     if (this.dataChannel) {
+      this.dataChannel.onopen = null
+      this.dataChannel.onclose = null
+      this.dataChannel.onerror = null
+      this.dataChannel.onmessage = null
       this.dataChannel.close()
       this.dataChannel = null
     }
     
+    // Clean up peer connection event handlers
+    this.pc.onicecandidate = null
+    this.pc.oniceconnectionstatechange = null
+    this.pc.onconnectionstatechange = null
+    this.pc.ontrack = null
+    this.pc.ondatachannel = null
+    this.pc.onnegotiationneeded = null
+    
+    // Remove all transceivers
+    this.pc.getTransceivers().forEach(transceiver => {
+      if (transceiver.stop) {
+        transceiver.stop()
+      }
+    })
+    
+    // Close the connection
     this.pc.close()
+    
+    // Clear callbacks
+    this.onIceCandidate = null
+    this.onTrack = null
+    this.onDataChannel = null
+    this.onConnectionStateChange = null
+    this.onIceConnectionStateChange = null
+    
+    // Clear pending candidates
+    this.pendingCandidates = []
   }
   
   getConnectionState() {
@@ -291,6 +337,15 @@ export class FixedWebRTCConnection {
       iceConnectionState: this.pc.iceConnectionState,
       signalingState: this.pc.signalingState,
       iceGatheringState: this.pc.iceGatheringState,
+    }
+  }
+  
+  async getStats(): Promise<RTCStatsReport | null> {
+    try {
+      return await this.pc.getStats()
+    } catch (error) {
+      console.error(`[WebRTC ${this.peerId}] Error getting stats:`, error)
+      return null
     }
   }
 }

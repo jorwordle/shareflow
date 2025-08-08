@@ -44,8 +44,11 @@ export interface RoomEvents {
   'room:created': (room: Room) => void
   'room:joined': (room: Room) => void
   'room:left': (userId: string) => void
+  'room:closed': (reason: string) => void
+  'room:updated': (data: { viewers: User[], viewerCount: number }) => void
   'user:joined': (user: User) => void
   'user:left': (userId: string) => void
+  'host:disconnected': () => void
   'stream:started': () => void
   'stream:stopped': () => void
   'chat:message': (message: ChatMessage) => void

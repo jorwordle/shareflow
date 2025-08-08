@@ -141,17 +141,28 @@ function removeUserFromRoom(roomCode, userId) {
   room.viewers = room.viewers.filter(v => v.id !== userId)
   
   if (previousCount !== room.viewers.length) {
-    console.log(`User removed from room ${roomCode} (${room.viewers.length} viewers remaining)`)
+    console.log(`[ROOM] User removed from room ${roomCode} (${room.viewers.length} viewers remaining)`)
   }
   
   // Clean up empty rooms or rooms where host left
   if (room.hostId === userId) {
-    console.log(`Host left room ${roomCode}, closing room`)
+    console.log(`[ROOM] Host left room ${roomCode}, closing room`)
+    // Notify all viewers that room is closing
+    io.to(roomCode).emit('room:closed', 'Host has left the room')
+    // Remove all users from socket room
+    const socketsInRoom = io.sockets.adapter.rooms.get(roomCode)
+    if (socketsInRoom) {
+      for (const socketId of socketsInRoom) {
+        io.sockets.sockets.get(socketId)?.leave(roomCode)
+      }
+    }
     rooms.delete(roomCode)
   } else if (room.viewers.length === 0 && !room.isStreaming) {
-    console.log(`Room ${roomCode} is empty, removing`)
+    console.log(`[ROOM] Room ${roomCode} is empty, removing`)
     rooms.delete(roomCode)
   }
+  
+  return room
 }
 
 // Socket.io error handling
@@ -250,6 +261,19 @@ io.on('connection', (socket) => {
         return
       }
       
+      // Check if user is already in a room and clean up
+      const existingUser = users.get(socket.id)
+      if (existingUser) {
+        console.log(`[ROOM] User ${socket.id} already exists, cleaning up`)
+        const userRooms = Array.from(socket.rooms).filter(r => r !== socket.id)
+        userRooms.forEach(oldRoom => {
+          if (oldRoom !== normalizedCode) {
+            socket.leave(oldRoom)
+            removeUserFromRoom(oldRoom, socket.id)
+          }
+        })
+      }
+      
       const user = {
         id: socket.id,
         name: userName.substring(0, 50),
@@ -268,7 +292,13 @@ io.on('connection', (socket) => {
       console.log(`[ROOM] User ${userName} joined room ${normalizedCode}. Total viewers: ${updatedRoom.viewers.length}`)
       socket.emit('room:joined', updatedRoom)
       
-      // Notify the host and other viewers
+      // Notify all users in room about updated viewer count
+      io.to(normalizedCode).emit('room:updated', {
+        viewers: updatedRoom.viewers,
+        viewerCount: updatedRoom.viewers.length
+      })
+      
+      // Notify about new user
       socket.to(normalizedCode).emit('user:joined', user)
       
       // If host is in the room, notify them specifically
@@ -411,25 +441,40 @@ io.on('connection', (socket) => {
     try {
       const user = users.get(socket.id)
       if (user) {
-        console.log(`[ROOM] Removing user ${user.name} (${socket.id}) from rooms`)
+        console.log(`[ROOM] Removing user ${user.name} (${socket.id}) from all rooms`)
+        
+        // Get all rooms this socket was in (except their own ID room)
         const userRooms = Array.from(socket.rooms).filter(r => r !== socket.id)
         
         userRooms.forEach(roomCode => {
-          const room = rooms.get(roomCode)
+          const room = removeUserFromRoom(roomCode, socket.id)
+          
           if (room) {
-            console.log(`[ROOM] User ${user.name} leaving room ${roomCode}`)
-            removeUserFromRoom(roomCode, socket.id)
-            socket.to(roomCode).emit('user:left', socket.id)
+            // Only emit user:left if room still exists
+            if (rooms.has(roomCode)) {
+              io.to(roomCode).emit('user:left', socket.id)
+              
+              // Send updated viewer count
+              io.to(roomCode).emit('room:updated', {
+                viewers: room.viewers,
+                viewerCount: room.viewers.length
+              })
+            }
             
-            if (user.isHost) {
-              console.log(`[ROOM] Host left room ${roomCode}, stopping stream and closing room`)
-              socket.to(roomCode).emit('stream:stopped')
-              room.isStreaming = false
+            if (user.isHost && room) {
+              console.log(`[ROOM] Host disconnected, notifying viewers`)
+              io.to(roomCode).emit('stream:stopped')
+              io.to(roomCode).emit('host:disconnected')
             }
           }
         })
+        
+        // Clean up user data
         users.delete(socket.id)
       }
+      
+      // Force cleanup of any lingering socket rooms
+      socket.rooms.clear()
     } catch (error) {
       console.error('Error handling disconnect:', error)
     }

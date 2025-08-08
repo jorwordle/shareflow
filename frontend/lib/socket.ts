@@ -82,6 +82,19 @@ export class SocketManager {
     this.socket.on('error', (error: string) => {
       this.emit('error', error)
     })
+
+    // New events for room management
+    this.socket.on('room:closed', (reason: string) => {
+      this.emit('room:closed', reason)
+    })
+
+    this.socket.on('room:updated', (data: { viewers: User[], viewerCount: number }) => {
+      this.emit('room:updated', data)
+    })
+
+    this.socket.on('host:disconnected', () => {
+      this.emit('host:disconnected')
+    })
   }
 
   createRoom(hostName: string, roomCode: string | null = null, maxViewers: number = 10) {
@@ -137,5 +150,9 @@ export class SocketManager {
 
   isConnected() {
     return this.socket?.connected || false
+  }
+
+  getSocketId() {
+    return this.socket?.id || null
   }
 }

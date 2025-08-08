@@ -246,6 +246,47 @@ export default function RoomPage() {
       connectionsRef.current.clear()
     })
 
+    // Handle room closure
+    socketRef.current.on('room:closed', (reason) => {
+      setError(reason || 'Room has been closed')
+      setIsStreaming(false)
+      setRemoteStreams(new Map())
+      
+      // Clean up connections
+      connectionsRef.current.forEach(conn => conn.close())
+      connectionsRef.current.clear()
+      
+      // Redirect after 3 seconds
+      setTimeout(() => {
+        router.push('/')
+      }, 3000)
+    })
+
+    // Handle viewer count updates
+    socketRef.current.on('room:updated', ({ viewers, viewerCount }) => {
+      // Update viewer list, excluding ourselves
+      const currentUserId = user?.id || socketRef.current?.getSocketId()
+      if (currentUserId) {
+        setViewers(viewers.filter(v => v.id !== currentUserId))
+      }
+    })
+
+    // Handle host disconnect
+    socketRef.current.on('host:disconnected', () => {
+      setError('Host has disconnected')
+      setIsStreaming(false)
+      setRemoteStreams(new Map())
+      
+      // Clean up connections
+      connectionsRef.current.forEach(conn => conn.close())
+      connectionsRef.current.clear()
+      
+      // Redirect after 3 seconds
+      setTimeout(() => {
+        router.push('/')
+      }, 3000)
+    })
+
     socketRef.current.on('error', (error) => {
       console.error('Socket error:', error)
       setError(error)
@@ -268,33 +309,42 @@ export default function RoomPage() {
 
   const startScreenShare = async () => {
     try {
-      // Get screen capture stream with audio
-      // Note: Audio capture requires user to check "Share audio" in the browser dialog
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          cursor: 'always',
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          frameRate: { ideal: 60 }
-        } as MediaTrackConstraints & { cursor?: string },
+      // Optimized settings for different capture scenarios
+      const videoConstraints: MediaTrackConstraints = {
+        width: { ideal: 1920, max: 1920 },
+        height: { ideal: 1080, max: 1080 },
+        frameRate: { ideal: 30, max: 60 }, // Start with 30fps for better stability
+      }
+      
+      // Add cursor display for screen/window capture (not for tab)
+      const displayConstraints: any = {
+        video: videoConstraints,
         audio: {
           echoCancellation: false,
           noiseSuppression: false,
-          sampleRate: 44100,
-          autoGainControl: false
-        } as MediaTrackConstraints | boolean
-      }).catch(async (error) => {
+          autoGainControl: false,
+          sampleRate: 48000,
+        },
+        // Prefer tab capture for better performance
+        preferCurrentTab: false,
+        selfBrowserSurface: 'exclude',
+        systemAudio: 'include',
+        surfaceSwitching: 'include',
+        monitorTypeSurfaces: 'include',
+      }
+      
+      // Get screen capture stream with audio
+      const stream = await navigator.mediaDevices.getDisplayMedia(displayConstraints).catch(async (error) => {
         // If audio capture fails, try without audio
         console.warn('Audio capture not supported or denied, trying video only:', error)
         return navigator.mediaDevices.getDisplayMedia({
-          video: {
-            cursor: 'always',
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-            frameRate: { ideal: 60 }
-          } as MediaTrackConstraints & { cursor?: string },
-          audio: false
-        })
+          video: videoConstraints,
+          audio: false,
+          preferCurrentTab: false,
+          selfBrowserSurface: 'exclude',
+          surfaceSwitching: 'include',
+          monitorTypeSurfaces: 'include',
+        } as any)
       })
       
       setLocalStream(stream)
@@ -317,9 +367,48 @@ export default function RoomPage() {
         await new Promise(resolve => setTimeout(resolve, 50))
       }
 
-      // Handle stream ending
-      stream.getVideoTracks()[0].onended = () => {
-        stopScreenShare()
+      // Optimize video track based on content
+      const videoTrack = stream.getVideoTracks()[0]
+      if (videoTrack) {
+        const settings = videoTrack.getSettings()
+        
+        // Apply optimizations based on display surface type
+        if (settings.displaySurface === 'browser') {
+          // Tab capture - optimize for smooth scrolling
+          await videoTrack.applyConstraints({
+            frameRate: { ideal: 30, max: 30 },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          })
+        } else if (settings.displaySurface === 'window') {
+          // Window capture - balance quality and performance
+          await videoTrack.applyConstraints({
+            frameRate: { ideal: 30, max: 60 },
+            width: { ideal: settings.width },
+            height: { ideal: settings.height },
+          })
+        } else if (settings.displaySurface === 'monitor') {
+          // Full screen capture - may need lower framerate for stability
+          await videoTrack.applyConstraints({
+            frameRate: { ideal: 30, max: 30 },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          })
+        }
+        
+        // Handle stream ending
+        videoTrack.onended = () => {
+          stopScreenShare()
+        }
+        
+        // Log capture details for debugging
+        console.log('Capture started:', {
+          displaySurface: settings.displaySurface,
+          width: settings.width,
+          height: settings.height,
+          frameRate: settings.frameRate,
+          hasAudio: stream.getAudioTracks().length > 0,
+        })
       }
     } catch (error) {
       console.error('Error starting screen share:', error)
@@ -329,16 +418,35 @@ export default function RoomPage() {
 
   const stopScreenShare = () => {
     if (localStream) {
-      localStream.getTracks().forEach(track => track.stop())
+      // Properly stop all tracks
+      localStream.getTracks().forEach(track => {
+        track.stop()
+        // Remove event listeners to prevent memory leaks
+        track.onended = null
+      })
       setLocalStream(null)
     }
     
     setIsStreaming(false)
     socketRef.current?.stopStream()
     
-    // Close all peer connections
-    connectionsRef.current.forEach(conn => conn.close())
+    // Close all peer connections with cleanup
+    connectionsRef.current.forEach(conn => {
+      try {
+        conn.close()
+      } catch (error) {
+        console.error('Error closing connection:', error)
+      }
+    })
     connectionsRef.current.clear()
+    
+    // Clear remote streams
+    setRemoteStreams(new Map())
+    
+    // Force garbage collection hint
+    if (typeof window !== 'undefined' && 'gc' in window) {
+      (window as any).gc()
+    }
   }
 
   const handleSendMessage = (message: string) => {
