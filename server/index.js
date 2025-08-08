@@ -188,9 +188,27 @@ io.on('connection', (socket) => {
         normalizedCode = roomCode.toUpperCase().substring(0, 10)
         // Check if room already exists
         if (rooms.has(normalizedCode)) {
-          console.log(`Room ${normalizedCode} already exists, cannot create`)
-          socket.emit('error', 'Room code already in use')
-          return
+          console.log(`[ROOM] Room ${normalizedCode} already exists, joining as host instead`)
+          // Room exists, join it as host instead
+          const existingRoom = rooms.get(normalizedCode)
+          if (existingRoom) {
+            // Update the host info
+            existingRoom.hostId = socket.id
+            existingRoom.hostName = hostName
+            
+            const user = {
+              id: socket.id,
+              name: hostName.substring(0, 50),
+              isHost: true,
+              connectedAt: new Date(),
+            }
+            users.set(socket.id, user)
+            
+            socket.join(normalizedCode)
+            socket.emit('room:created', existingRoom)
+            console.log(`[ROOM] Host ${hostName} took over room ${normalizedCode}`)
+            return
+          }
         }
       }
 
@@ -204,6 +222,7 @@ io.on('connection', (socket) => {
       
       const room = createRoom(socket.id, hostName, normalizedCode, maxViewers)
       socket.join(room.code)
+      console.log(`[ROOM] Created room ${room.code} with host ${hostName} (${socket.id})`)
       socket.emit('room:created', room)
     } catch (error) {
       console.error('Error creating room:', error)
@@ -220,9 +239,13 @@ io.on('connection', (socket) => {
       }
 
       const normalizedCode = roomCode.toUpperCase().substring(0, 10)
+      console.log(`[ROOM] User ${userName} (${socket.id}) attempting to join room ${normalizedCode}`)
+      
       const room = rooms.get(normalizedCode)
       
       if (!room) {
+        console.error(`[ROOM] Room ${normalizedCode} not found`)
+        console.log('[ROOM] Available rooms:', Array.from(rooms.keys()))
         socket.emit('error', 'Room not found')
         return
       }
@@ -242,8 +265,16 @@ io.on('connection', (socket) => {
       }
       
       socket.join(normalizedCode)
+      console.log(`[ROOM] User ${userName} joined room ${normalizedCode}. Total viewers: ${updatedRoom.viewers.length}`)
       socket.emit('room:joined', updatedRoom)
+      
+      // Notify the host and other viewers
       socket.to(normalizedCode).emit('user:joined', user)
+      
+      // If host is in the room, notify them specifically
+      if (room.hostId) {
+        io.to(room.hostId).emit('user:joined', user)
+      }
     } catch (error) {
       console.error('Error joining room:', error)
       socket.emit('error', 'Failed to join room')
@@ -380,15 +411,19 @@ io.on('connection', (socket) => {
     try {
       const user = users.get(socket.id)
       if (user) {
+        console.log(`[ROOM] Removing user ${user.name} (${socket.id}) from rooms`)
         const userRooms = Array.from(socket.rooms).filter(r => r !== socket.id)
+        
         userRooms.forEach(roomCode => {
-          removeUserFromRoom(roomCode, socket.id)
-          socket.to(roomCode).emit('user:left', socket.id)
-          
-          if (user.isHost) {
-            socket.to(roomCode).emit('stream:stopped')
-            const room = rooms.get(roomCode)
-            if (room) {
+          const room = rooms.get(roomCode)
+          if (room) {
+            console.log(`[ROOM] User ${user.name} leaving room ${roomCode}`)
+            removeUserFromRoom(roomCode, socket.id)
+            socket.to(roomCode).emit('user:left', socket.id)
+            
+            if (user.isHost) {
+              console.log(`[ROOM] Host left room ${roomCode}, stopping stream and closing room`)
+              socket.to(roomCode).emit('stream:stopped')
               room.isStreaming = false
             }
           }
@@ -415,11 +450,39 @@ app.get('/health', (req, res) => {
   res.json(health)
 })
 
+// Debug endpoint for specific room
+app.get('/room/:code', (req, res) => {
+  const roomCode = req.params.code.toUpperCase()
+  const room = rooms.get(roomCode)
+  
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found', availableRooms: Array.from(rooms.keys()) })
+  }
+  
+  res.json({
+    room: {
+      code: room.code,
+      hostId: room.hostId,
+      hostName: room.hostName,
+      viewers: room.viewers,
+      viewerCount: room.viewers.length,
+      maxViewers: room.maxViewers,
+      isStreaming: room.isStreaming,
+      createdAt: room.createdAt,
+    },
+    connectedSockets: io.sockets.adapter.rooms.get(roomCode) ? 
+      Array.from(io.sockets.adapter.rooms.get(roomCode)) : [],
+  })
+})
+
 // Stats endpoint
 app.get('/stats', (req, res) => {
   const roomList = Array.from(rooms.values()).map(room => ({
     code: room.code,
+    hostId: room.hostId,
+    hostName: room.hostName,
     viewers: room.viewers.length,
+    viewerList: room.viewers.map(v => ({ id: v.id, name: v.name })),
     maxViewers: room.maxViewers,
     isStreaming: room.isStreaming,
     createdAt: room.createdAt,
@@ -429,6 +492,7 @@ app.get('/stats', (req, res) => {
     ...connectionStats,
     currentRooms: rooms.size,
     currentUsers: users.size,
+    activeRoomCodes: Array.from(rooms.keys()),
     rooms: roomList,
   })
 })
@@ -441,6 +505,8 @@ app.get('/', (req, res) => {
     status: 'running',
     health: '/health',
     stats: '/stats',
+    rooms: rooms.size,
+    users: users.size,
   })
 })
 

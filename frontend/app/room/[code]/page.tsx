@@ -157,17 +157,22 @@ export default function RoomPage() {
 
     // Get socket ID after connection
     socketRef.current.on('room:created', (room) => {
+      console.log('Room created:', room)
       setRoom(room)
       // Update user with socket ID (hostId)
       setUser(prev => prev ? { ...prev, id: room.hostId } : null)
+      // Set viewers (excluding host)
+      setViewers(room.viewers.filter(v => v.id !== room.hostId))
     })
 
     socketRef.current.on('room:joined', (room) => {
+      console.log('Joined room:', room)
       setRoom(room)
       // Find our user in the viewers list to get the socket ID
       const ourUser = room.viewers.find(v => v.name === userName)
       if (ourUser) {
         setUser(prev => prev ? { ...prev, id: ourUser.id } : null)
+        // Show all other users (excluding ourselves)
         setViewers(room.viewers.filter(v => v.id !== ourUser.id))
       }
     })

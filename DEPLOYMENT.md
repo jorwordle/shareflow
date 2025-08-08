@@ -1,5 +1,9 @@
 # ShareFlow Deployment Guide
 
+## Current Production URLs
+- **Frontend**: https://sharefloww.netlify.app
+- **Backend**: https://shareflow-production.up.railway.app
+
 This guide provides step-by-step instructions for deploying ShareFlow to production using Railway (backend) and Netlify (frontend).
 
 ## Prerequisites
@@ -37,7 +41,7 @@ In Railway project settings, add these environment variables:
 ```bash
 PORT=3001
 NODE_ENV=production
-CLIENT_URL=https://your-app.netlify.app,https://your-custom-domain.com
+CLIENT_URL=https://sharefloww.netlify.app
 ```
 
 **Important:** Replace the CLIENT_URL with your actual Netlify URL after deployment.
@@ -80,7 +84,7 @@ You should see a JSON response with server status.
 In Netlify site settings → Environment variables, add:
 
 ```bash
-NEXT_PUBLIC_SERVER_URL=https://your-app.up.railway.app
+NEXT_PUBLIC_SERVER_URL=https://shareflow-production.up.railway.app
 NODE_VERSION=18
 ```
 

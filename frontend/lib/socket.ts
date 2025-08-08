@@ -8,6 +8,7 @@ export class SocketManager {
 
   constructor(serverUrl: string = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:3001') {
     this.serverUrl = serverUrl
+    console.log('Socket.io connecting to:', this.serverUrl)
   }
 
   connect() {
@@ -27,11 +28,15 @@ export class SocketManager {
     if (!this.socket) return
 
     this.socket.on('connect', () => {
-      console.log('Connected to server')
+      console.log('Connected to server:', this.serverUrl, 'Socket ID:', this.socket?.id)
     })
 
-    this.socket.on('disconnect', () => {
-      console.log('Disconnected from server')
+    this.socket.on('disconnect', (reason) => {
+      console.log('Disconnected from server:', reason)
+    })
+    
+    this.socket.on('connect_error', (error) => {
+      console.error('Socket connection error:', error.message)
     })
 
     this.socket.on('room:created', (room: Room) => {
