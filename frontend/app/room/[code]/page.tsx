@@ -7,7 +7,7 @@ import VideoPlayer from '@/components/VideoPlayer'
 import Chat from '@/components/Chat'
 import ConnectionIndicator from '@/components/ConnectionIndicator'
 import { SocketManager } from '@/lib/socket'
-import { SimpleWebRTCConnection } from '@/lib/simpleWebRTC'
+import { FixedWebRTCConnection } from '@/lib/webrtcFixed'
 import { User, Room, ChatMessage, StreamQuality } from '@/types'
 
 export default function RoomPage() {
@@ -30,7 +30,7 @@ export default function RoomPage() {
   const [notification, setNotification] = useState<{ type: 'success' | 'info', message: string } | null>(null)
 
   const socketRef = useRef<SocketManager | undefined>(undefined)
-  const connectionsRef = useRef<Map<string, SimpleWebRTCConnection>>(new Map())
+  const connectionsRef = useRef<Map<string, FixedWebRTCConnection>>(new Map())
   const localStreamRef = useRef<MediaStream | null>(null)
   const isStreamingRef = useRef<boolean>(false)
 
@@ -47,7 +47,7 @@ export default function RoomPage() {
     
     // Host is impolite (creates offers), viewer is polite (waits)
     const isPolite = !isInitiator
-    const connection = new SimpleWebRTCConnection(isPolite, peerId)
+    const connection = new FixedWebRTCConnection(isPolite, peerId)
     
     // Set up event handlers
     connection.onIceCandidate = (candidate) => {
@@ -84,23 +84,24 @@ export default function RoomPage() {
       }
     }
     
-    connection.onNegotiationNeeded = (offer) => {
-      socketRef.current?.sendWebRTCSignal('offer', peerId, offer)
-    }
-
     connectionsRef.current.set(peerId, connection)
 
-    // If initiator (host) and has stream, add it and create data channel
+    // If initiator (host) and has stream, set up the connection
     if (isInitiator && localStreamRef.current) {
-      // Add stream first
-      await connection.addStream(localStreamRef.current)
-      
-      // Create data channel (this will trigger negotiation)
-      connection.createDataChannel()
-      
-      // Manually create initial offer
-      const offer = await connection.createOffer()
-      socketRef.current?.sendWebRTCSignal('offer', peerId, offer)
+      try {
+        // IMPORTANT: Create data channel first to ensure consistent SDP ordering
+        connection.createDataChannel()
+        
+        // Then add the stream
+        await connection.addStream(localStreamRef.current)
+        
+        // Create and send offer
+        const offer = await connection.createOffer()
+        socketRef.current?.sendWebRTCSignal('offer', peerId, offer)
+      } catch (error) {
+        console.error(`Failed to create connection for ${peerId}:`, error)
+        setError('Failed to establish peer connection')
+      }
     }
 
     return connection
@@ -264,7 +265,8 @@ export default function RoomPage() {
 
   const startScreenShare = async () => {
     try {
-      // Get screen capture stream
+      // Get screen capture stream with audio
+      // Note: Audio capture requires user to check "Share audio" in the browser dialog
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           cursor: 'always',
@@ -272,7 +274,24 @@ export default function RoomPage() {
           height: { ideal: 1080 },
           frameRate: { ideal: 60 }
         } as MediaTrackConstraints & { cursor?: string },
-        audio: false
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          sampleRate: 44100,
+          autoGainControl: false
+        } as MediaTrackConstraints | boolean
+      }).catch(async (error) => {
+        // If audio capture fails, try without audio
+        console.warn('Audio capture not supported or denied, trying video only:', error)
+        return navigator.mediaDevices.getDisplayMedia({
+          video: {
+            cursor: 'always',
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            frameRate: { ideal: 60 }
+          } as MediaTrackConstraints & { cursor?: string },
+          audio: false
+        })
       })
       
       setLocalStream(stream)
