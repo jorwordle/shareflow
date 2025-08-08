@@ -7,7 +7,7 @@ import VideoPlayer from '@/components/VideoPlayer'
 import Chat from '@/components/Chat'
 import ConnectionIndicator from '@/components/ConnectionIndicator'
 import { SocketManager } from '@/lib/socket'
-import { WebRTCConnection } from '@/lib/webrtc'
+import { SimpleWebRTCConnection } from '@/lib/simpleWebRTC'
 import { User, Room, ChatMessage, StreamQuality } from '@/types'
 
 export default function RoomPage() {
@@ -27,9 +27,10 @@ export default function RoomPage() {
   const [stats, setStats] = useState<RTCStatsReport | undefined>()
   const [quality, setQuality] = useState<StreamQuality['resolution']>('1080p')
   const [error, setError] = useState<string | null>(null)
+  const [notification, setNotification] = useState<{ type: 'success' | 'info', message: string } | null>(null)
 
   const socketRef = useRef<SocketManager | undefined>(undefined)
-  const connectionsRef = useRef<Map<string, WebRTCConnection>>(new Map())
+  const connectionsRef = useRef<Map<string, SimpleWebRTCConnection>>(new Map())
   const localStreamRef = useRef<MediaStream | null>(null)
   const isStreamingRef = useRef<boolean>(false)
 
@@ -43,90 +44,94 @@ export default function RoomPage() {
   }, [isStreaming])
 
   const createPeerConnection = useCallback(async (peerId: string, isInitiator: boolean) => {
-    console.log(`Creating peer connection with ${peerId}, initiator: ${isInitiator}`)
     
-    const connection = new WebRTCConnection(
-      (candidate) => {
-        console.log(`Sending ICE candidate to ${peerId}`)
-        socketRef.current?.sendWebRTCSignal('ice-candidate', peerId, candidate)
-      },
-      (stream) => {
-        console.log(`Received remote stream from ${peerId}`)
-        setRemoteStreams(prev => {
-          const updated = new Map(prev)
-          updated.set(peerId, stream)
-          return updated
-        })
-      },
-      (channel) => {
-        console.log(`Data channel opened with ${peerId}`)
-        channel.onmessage = (event) => {
-          try {
-            const message: ChatMessage = JSON.parse(event.data)
-            setMessages(prev => [...prev, message])
-          } catch (e) {
-            console.error('Error parsing chat message:', e)
-          }
+    // Host is impolite (creates offers), viewer is polite (waits)
+    const isPolite = !isInitiator
+    const connection = new SimpleWebRTCConnection(isPolite, peerId)
+    
+    // Set up event handlers
+    connection.onIceCandidate = (candidate) => {
+      socketRef.current?.sendWebRTCSignal('ice-candidate', peerId, candidate)
+    }
+    
+    connection.onTrack = (stream) => {
+      setRemoteStreams(prev => {
+        const updated = new Map(prev)
+        updated.set(peerId, stream)
+        return updated
+      })
+    }
+    
+    connection.onDataChannel = (channel) => {
+      channel.onmessage = (event) => {
+        try {
+          const message: ChatMessage = JSON.parse(event.data)
+          setMessages(prev => [...prev, message])
+        } catch (e) {
+          console.error('Error parsing chat message:', e)
         }
-      },
-      (state) => {
-        console.log(`Connection state with ${peerId}: ${state}`)
-        setConnectionState(state)
-      },
-      (error) => {
-        console.error(`Connection error with ${peerId}:`, error)
-        setError(error.message)
       }
-    )
+    }
+    
+    connection.onConnectionStateChange = (state) => {
+      setConnectionState(state)
+    }
+    
+    connection.onIceConnectionStateChange = (state) => {
+      // Only log errors
+      if (state === 'failed') {
+        console.error(`ICE connection failed with peer ${peerId}`)
+      }
+    }
+    
+    connection.onNegotiationNeeded = (offer) => {
+      socketRef.current?.sendWebRTCSignal('offer', peerId, offer)
+    }
 
     connectionsRef.current.set(peerId, connection)
 
-    // If initiator (host) and has stream, add it to connection
+    // If initiator (host) and has stream, add it and create data channel
     if (isInitiator && localStreamRef.current) {
-      console.log('Adding local stream to connection')
-      await connection.addStream(localStreamRef.current, quality)
+      // Add stream first
+      await connection.addStream(localStreamRef.current)
       
-      // Create and send offer
+      // Create data channel (this will trigger negotiation)
+      connection.createDataChannel()
+      
+      // Manually create initial offer
       const offer = await connection.createOffer()
-      console.log(`Sending offer to ${peerId}`)
       socketRef.current?.sendWebRTCSignal('offer', peerId, offer)
     }
 
     return connection
-  }, [quality])
+  }, [])
 
   const handleOffer = useCallback(async (from: string, offer: RTCSessionDescriptionInit) => {
-    console.log(`Handling offer from ${from}`)
-    
     let connection = connectionsRef.current.get(from)
     
     if (!connection) {
       connection = await createPeerConnection(from, false)
     }
 
-    await connection.setRemoteDescription(offer)
-    const answer = await connection.createAnswer()
-    console.log(`Sending answer to ${from}`)
-    socketRef.current?.sendWebRTCSignal('answer', from, answer)
+    const answer = await connection.handleOffer(offer)
+    if (answer) {
+      socketRef.current?.sendWebRTCSignal('answer', from, answer)
+    }
   }, [createPeerConnection])
 
   const handleAnswer = useCallback(async (from: string, answer: RTCSessionDescriptionInit) => {
-    console.log(`Handling answer from ${from}`)
     const connection = connectionsRef.current.get(from)
     if (connection) {
-      await connection.setRemoteDescription(answer)
+      await connection.handleOffer(answer) // handleOffer handles both offers and answers
     } else {
       console.error(`No connection found for ${from}`)
     }
   }, [])
 
   const handleIceCandidate = useCallback(async (from: string, candidate: RTCIceCandidateInit) => {
-    console.log(`Received ICE candidate from ${from}`)
     const connection = connectionsRef.current.get(from)
     if (connection) {
       await connection.addIceCandidate(candidate)
-    } else {
-      console.warn(`No connection found for ICE candidate from ${from}`)
     }
   }, [])
 
@@ -152,14 +157,12 @@ export default function RoomPage() {
 
     // Get socket ID after connection
     socketRef.current.on('room:created', (room) => {
-      console.log('Room created:', room)
       setRoom(room)
       // Update user with socket ID (hostId)
       setUser(prev => prev ? { ...prev, id: room.hostId } : null)
     })
 
     socketRef.current.on('room:joined', (room) => {
-      console.log('Joined room:', room)
       setRoom(room)
       // Find our user in the viewers list to get the socket ID
       const ourUser = room.viewers.find(v => v.name === userName)
@@ -170,21 +173,22 @@ export default function RoomPage() {
     })
 
     socketRef.current.on('user:joined', async (newUser) => {
-      console.log('User joined:', newUser)
       setViewers(prev => [...prev, newUser])
+      
+      // Show notification
+      setNotification({ type: 'info', message: `${newUser.name} joined the room` })
+      setTimeout(() => setNotification(null), 3000)
       
       // If host is streaming, create connection for new viewer
       if (isHost && isStreamingRef.current && localStreamRef.current) {
-        console.log('Host creating connection for new viewer:', newUser.id)
-        // Small delay to ensure viewer is ready
+        // Delay to ensure viewer is ready
         setTimeout(async () => {
           await createPeerConnection(newUser.id, true)
-        }, 500)
+        }, 1000)
       }
     })
 
     socketRef.current.on('user:left', (leftUserId) => {
-      console.log('User left:', leftUserId)
       setViewers(prev => prev.filter(v => v.id !== leftUserId))
       
       // Clean up connection
@@ -206,13 +210,10 @@ export default function RoomPage() {
     })
 
     socketRef.current.on('webrtc:offer', async (signal) => {
-      console.log('Received offer signal:', signal)
-      // The 'to' field is the socket ID that should receive this
       await handleOffer(signal.from, signal.data)
     })
 
     socketRef.current.on('webrtc:answer', async (signal) => {
-      console.log('Received answer signal:', signal)
       await handleAnswer(signal.from, signal.data)
     })
 
@@ -221,14 +222,12 @@ export default function RoomPage() {
     })
 
     socketRef.current.on('stream:started', () => {
-      console.log('Stream started signal received')
       if (!isHost) {
         setIsStreaming(true)
       }
     })
 
     socketRef.current.on('stream:stopped', () => {
-      console.log('Stream stopped signal received')
       setIsStreaming(false)
       if (!isHost) {
         setRemoteStreams(new Map())
@@ -245,7 +244,7 @@ export default function RoomPage() {
 
     // Join or create room
     if (isHost) {
-      socketRef.current.createRoom(userName, 10)
+      socketRef.current.createRoom(userName, roomCode, 10)
     } else {
       socketRef.current.joinRoom(roomCode, userName)
     }
@@ -260,8 +259,6 @@ export default function RoomPage() {
 
   const startScreenShare = async () => {
     try {
-      console.log('Starting screen share')
-      
       // Get screen capture stream
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
@@ -279,26 +276,31 @@ export default function RoomPage() {
       // Notify others that streaming started
       socketRef.current?.startStream()
       
+      // Show success notification
+      setNotification({ type: 'success', message: 'Screen sharing started successfully!' })
+      setTimeout(() => setNotification(null), 3000)
+      
       // Create peer connections for all existing viewers
-      console.log(`Creating connections for ${viewers.length} viewers`)
+      // Add a small delay to ensure stream is ready
+      await new Promise(resolve => setTimeout(resolve, 100))
+      
       for (const viewer of viewers) {
         await createPeerConnection(viewer.id, true)
+        // Small delay between connections to avoid overwhelming signaling
+        await new Promise(resolve => setTimeout(resolve, 50))
       }
 
       // Handle stream ending
       stream.getVideoTracks()[0].onended = () => {
-        console.log('Screen share ended by user')
         stopScreenShare()
       }
     } catch (error) {
       console.error('Error starting screen share:', error)
-      setError('Failed to start screen sharing')
+      setError('Failed to start screen sharing. Please try again.')
     }
   }
 
   const stopScreenShare = () => {
-    console.log('Stopping screen share')
-    
     if (localStream) {
       localStream.getTracks().forEach(track => track.stop())
       setLocalStream(null)
@@ -334,15 +336,12 @@ export default function RoomPage() {
 
   const handleQualityChange = async (newQuality: StreamQuality['resolution']) => {
     setQuality(newQuality)
-    
-    // Update quality for all connections
-    connectionsRef.current.forEach(conn => {
-      conn.changeQuality(newQuality)
-    })
   }
 
   const copyRoomCode = () => {
     navigator.clipboard.writeText(roomCode)
+    setNotification({ type: 'success', message: 'Room code copied to clipboard!' })
+    setTimeout(() => setNotification(null), 2000)
   }
 
   const isHost = user?.isHost
@@ -351,10 +350,41 @@ export default function RoomPage() {
     <div className="min-h-screen bg-gray-100 dark:bg-gray-950">
       <ConnectionIndicator connectionState={connectionState} stats={stats} />
 
+      {notification && (
+        <div className={`fixed top-20 left-4 right-4 z-50 ${notification.type === 'success' ? 'bg-green-500/90' : 'bg-blue-500/90'} backdrop-blur text-white p-4 rounded-lg max-w-lg mx-auto shadow-xl animate-in slide-in-from-top-2 duration-300`}>
+          <div className="flex items-center gap-3">
+            <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              {notification.type === 'success' ? (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              )}
+            </svg>
+            <p className="flex-1">{notification.message}</p>
+          </div>
+        </div>
+      )}
+      
       {error && (
-        <div className="fixed top-20 left-4 right-4 z-50 bg-red-500 text-white p-3 rounded-lg max-w-lg mx-auto">
-          {error}
-          <button onClick={() => setError(null)} className="ml-2 underline">Dismiss</button>
+        <div className="fixed top-20 left-4 right-4 z-50 bg-red-500/90 backdrop-blur text-white p-4 rounded-lg max-w-lg mx-auto shadow-xl animate-in slide-in-from-top-2 duration-300">
+          <div className="flex items-start gap-3">
+            <svg className="w-5 h-5 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div className="flex-1">
+              <p className="font-medium">Connection Error</p>
+              <p className="text-sm mt-1 text-red-100">{error}</p>
+            </div>
+            <button 
+              onClick={() => setError(null)} 
+              className="text-white/80 hover:text-white transition-colors"
+              aria-label="Dismiss"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
       )}
 
@@ -453,10 +483,16 @@ export default function RoomPage() {
                   ))}
                   {remoteStreams.size === 0 && (
                     <div className="h-full flex items-center justify-center glass-effect rounded-xl">
-                      <div className="text-center">
-                        <div className="w-20 h-20 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-                        <p className="text-gray-600 dark:text-gray-400 text-lg">
-                          {isStreaming ? 'Connecting to host...' : 'Waiting for host to start sharing...'}
+                      <div className="text-center p-8">
+                        <div className="relative">
+                          <div className="w-20 h-20 border-4 border-blue-600/30 rounded-full mx-auto"></div>
+                          <div className="w-20 h-20 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto absolute inset-0"></div>
+                        </div>
+                        <p className="text-gray-600 dark:text-gray-400 text-lg mt-6 font-medium">
+                          {isStreaming ? 'Establishing connection...' : 'Waiting for host to start sharing'}
+                        </p>
+                        <p className="text-gray-500 dark:text-gray-500 text-sm mt-2">
+                          {isStreaming ? 'This may take a few seconds' : 'The host will begin sharing their screen soon'}
                         </p>
                       </div>
                     </div>

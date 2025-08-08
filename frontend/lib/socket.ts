@@ -79,8 +79,8 @@ export class SocketManager {
     })
   }
 
-  createRoom(hostName: string, maxViewers: number = 10) {
-    this.socket?.emit('room:create', { hostName, maxViewers })
+  createRoom(hostName: string, roomCode: string | null = null, maxViewers: number = 10) {
+    this.socket?.emit('room:create', { hostName, roomCode, maxViewers })
   }
 
   joinRoom(roomCode: string, userName: string) {
