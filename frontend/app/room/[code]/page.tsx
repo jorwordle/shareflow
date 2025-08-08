@@ -27,7 +27,7 @@ export default function RoomPage() {
   const [stats, setStats] = useState<RTCStatsReport | undefined>()
   const [quality, setQuality] = useState<StreamQuality['resolution']>('1080p')
 
-  const socketRef = useRef<SocketManager>()
+  const socketRef = useRef<SocketManager | undefined>(undefined)
   const connectionsRef = useRef<Map<string, WebRTCConnection>>(new Map())
 
   useEffect(() => {

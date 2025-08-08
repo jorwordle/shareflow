@@ -1,5 +1,10 @@
 import { StreamQuality } from '@/types'
 
+// Extend RTCRtpEncodingParameters with browser-supported properties
+interface ExtendedRTCRtpEncodingParameters extends RTCRtpEncodingParameters {
+  maxFramerate?: number
+}
+
 // Enhanced ICE servers including TURN for firewall traversal
 export const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -287,19 +292,22 @@ export class WebRTCConnection {
         params.encodings = [{}]
       }
       
-      // Set bitrate limit
-      params.encodings[0].maxBitrate = BITRATE_LIMITS[quality]
+      // Use extended type for encoding parameters
+      const encoding = params.encodings[0] as ExtendedRTCRtpEncodingParameters
       
-      // Enable scalability for better adaptation
+      // Set bitrate limit
+      encoding.maxBitrate = BITRATE_LIMITS[quality]
+      
+      // Enable scalability for better adaptation with framerate control
       if (quality === '1080p') {
-        params.encodings[0].scaleResolutionDownBy = 1
-        params.encodings[0].maxFramerate = 60
+        encoding.scaleResolutionDownBy = 1
+        encoding.maxFramerate = 60
       } else if (quality === '720p') {
-        params.encodings[0].scaleResolutionDownBy = 1.5
-        params.encodings[0].maxFramerate = 30
+        encoding.scaleResolutionDownBy = 1.5
+        encoding.maxFramerate = 30
       } else {
-        params.encodings[0].scaleResolutionDownBy = 3
-        params.encodings[0].maxFramerate = 30
+        encoding.scaleResolutionDownBy = 3
+        encoding.maxFramerate = 30
       }
       
       await sender.setParameters(params)
