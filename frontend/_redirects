@@ -1,0 +1,3 @@
+# Redirects for Next.js dynamic routes
+/room/*  /.netlify/functions/___netlify-handler  200
+/api/*   /.netlify/functions/___netlify-handler  200
