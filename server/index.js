@@ -11,6 +11,13 @@ const allowedOrigins = process.env.CLIENT_URL
   ? process.env.CLIENT_URL.split(',').map(url => url.trim())
   : ['http://localhost:3000']
 
+// In production, ensure we have the correct frontend URL
+if (process.env.NODE_ENV === 'production' && !allowedOrigins.includes('https://sharefloww.netlify.app')) {
+  allowedOrigins.push('https://sharefloww.netlify.app')
+}
+
+console.log('Allowed origins:', allowedOrigins)
+
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, Postman, etc.)
@@ -85,8 +92,9 @@ function generateRoomCode() {
   return code
 }
 
-function createRoom(hostId, hostName, maxViewers = 10) {
-  const code = generateRoomCode()
+function createRoom(hostId, hostName, roomCode = null, maxViewers = 10) {
+  // Use provided room code or generate a new one
+  const code = roomCode || generateRoomCode()
   const room = {
     id: code,
     code,
@@ -159,19 +167,31 @@ io.on('connection', (socket) => {
     connectionStats.currentConnections
   )
   
-  console.log(`User connected: ${socket.id} (Active: ${connectionStats.currentConnections})`)
+  console.log(`[SOCKET] User connected: ${socket.id} (Active: ${connectionStats.currentConnections})`)
 
   // Attach error handler for this socket
   socket.on('error', (error) => {
     console.error(`Socket error for ${socket.id}:`, error)
   })
 
-  socket.on('room:create', ({ hostName, maxViewers }) => {
+  socket.on('room:create', ({ hostName, roomCode, maxViewers }) => {
     try {
       // Validate input
       if (!hostName || typeof hostName !== 'string' || hostName.length > 50) {
         socket.emit('error', 'Invalid host name')
         return
+      }
+
+      // If room code is provided, validate and normalize it
+      let normalizedCode = null
+      if (roomCode) {
+        normalizedCode = roomCode.toUpperCase().substring(0, 10)
+        // Check if room already exists
+        if (rooms.has(normalizedCode)) {
+          console.log(`Room ${normalizedCode} already exists, cannot create`)
+          socket.emit('error', 'Room code already in use')
+          return
+        }
       }
 
       const user = {
@@ -182,7 +202,7 @@ io.on('connection', (socket) => {
       }
       users.set(socket.id, user)
       
-      const room = createRoom(socket.id, hostName, maxViewers)
+      const room = createRoom(socket.id, hostName, normalizedCode, maxViewers)
       socket.join(room.code)
       socket.emit('room:created', room)
     } catch (error) {
@@ -277,6 +297,7 @@ io.on('connection', (socket) => {
     try {
       if (!to || !data) return
       
+      console.log(`[WebRTC] Relaying OFFER from ${socket.id} to ${to}`)
       io.to(to).emit('webrtc:offer', {
         type: 'offer',
         from: socket.id,
@@ -292,6 +313,7 @@ io.on('connection', (socket) => {
     try {
       if (!to || !data) return
       
+      console.log(`[WebRTC] Relaying ANSWER from ${socket.id} to ${to}`)
       io.to(to).emit('webrtc:answer', {
         type: 'answer',
         from: socket.id,
@@ -307,6 +329,7 @@ io.on('connection', (socket) => {
     try {
       if (!to || !data) return
       
+      console.log(`[WebRTC] Relaying ICE candidate from ${socket.id} to ${to} (${data.type || 'unknown'} ${data.protocol || ''})`)
       io.to(to).emit('webrtc:ice-candidate', {
         type: 'ice-candidate',
         from: socket.id,
@@ -352,7 +375,7 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', (reason) => {
     connectionStats.currentConnections--
-    console.log(`User disconnected: ${socket.id} (Reason: ${reason}, Active: ${connectionStats.currentConnections})`)
+    console.log(`[SOCKET] User disconnected: ${socket.id} (Reason: ${reason}, Active: ${connectionStats.currentConnections})`)
     
     try {
       const user = users.get(socket.id)
