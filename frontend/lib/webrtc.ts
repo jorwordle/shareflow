@@ -254,7 +254,7 @@ export class WebRTCConnection {
           ...constraints,
           cursor: 'always',
           displaySurface: 'monitor', // Prefer full screen
-        } as MediaTrackConstraints,
+        } as MediaTrackConstraints & { cursor?: string; displaySurface?: string },
         audio: {
           echoCancellation: false,
           noiseSuppression: false,
@@ -267,7 +267,7 @@ export class WebRTCConnection {
           video: {
             ...constraints,
             cursor: 'always',
-          } as MediaTrackConstraints,
+          } as MediaTrackConstraints & { cursor?: string },
           audio: false,
         })
       })

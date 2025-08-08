@@ -269,7 +269,7 @@ export default function RoomPage() {
           width: { ideal: 1920 },
           height: { ideal: 1080 },
           frameRate: { ideal: 60 }
-        },
+        } as MediaTrackConstraints & { cursor?: string },
         audio: false
       })
       
